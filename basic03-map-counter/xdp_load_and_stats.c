@@ -157,11 +157,26 @@ void map_get_value_array(int fd, __u32 key, struct datarec *value)
 /* BPF_MAP_TYPE_PERCPU_ARRAY */
 void map_get_value_percpu_array(int fd, __u32 key, struct datarec *value)
 {
-	/* For percpu maps, userspace gets a value per possible CPU */
-	// unsigned int nr_cpus = bpf_num_possible_cpus();
-	// struct datarec values[nr_cpus];
+  /* For percpu maps, userspace gets a value per possible CPU */
+  unsigned int nr_cpus = bpf_num_possible_cpus();
+  struct datarec values[nr_cpus];
+  __u64 sum_bytes = 0;
+  __u64 sum_pkts = 0;
+  int i;
 
-	fprintf(stderr, "ERR: %s() not impl. see assignment#3", __func__);
+  if ((bpf_map_lookup_elem(fd, &key, values)) != 0) {
+    fprintf(stderr,
+            "ERR: bpf_map_lookup_elem failed key:0x%X\n", key);
+    return;
+  }
+
+  /* Sum values from each CPU */
+  for (i = 0; i < nr_cpus; i++) {
+    sum_pkts  += values[i].rx_packets;
+    sum_bytes += values[i].rx_bytes;
+  }
+  value->rx_packets = sum_pkts;
+  value->rx_bytes   = sum_bytes;
 }
 
 static bool map_collect(int fd, __u32 map_type, __u32 key, struct record *rec)
@@ -176,7 +191,8 @@ static bool map_collect(int fd, __u32 map_type, __u32 key, struct record *rec)
 		map_get_value_array(fd, key, &value);
 		break;
 	case BPF_MAP_TYPE_PERCPU_ARRAY:
-		/* fall-through */
+    map_get_value_percpu_array(fd, key, &value);
+    break;
 	default:
 		fprintf(stderr, "ERR: Unknown map_type(%u) cannot handle\n",
 			map_type);
@@ -196,7 +212,9 @@ static void stats_collect(int map_fd, __u32 map_type,
 	/* Assignment#2: Collect other XDP actions stats  */
 	__u32 key = XDP_PASS;
 
-	map_collect(map_fd, map_type, key, &stats_rec->stats[0]);
+  for (key = 0; key < XDP_ACTION_MAX; key++) {
+    map_collect(map_fd, map_type, key, &stats_rec->stats[key]);
+  }
 }
 
 static void stats_poll(int map_fd, __u32 map_type, int interval)
