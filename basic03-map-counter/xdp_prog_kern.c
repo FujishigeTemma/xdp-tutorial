@@ -51,7 +51,7 @@ int  xdp_stats1_func(struct xdp_md *ctx)
    * - Hint there is a map type named BPF_MAP_TYPE_PERCPU_ARRAY
    */
   __u64 bytes = data_end - data; /* Calculate packet length */
-  lock_xadd(&rec->rx_bytes, )
+  lock_xadd(&rec->rx_bytes, bytes);
 
 	return XDP_PASS;
 }
