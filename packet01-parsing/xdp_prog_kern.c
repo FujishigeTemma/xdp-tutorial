@@ -119,6 +119,7 @@ int  xdp_parser_func(struct xdp_md *ctx)
 	void *data_end = (void *)(long)ctx->data_end;
 	void *data = (void *)(long)ctx->data;
 	struct ethhdr *eth;
+  struct ipv6hdr *ipv6hdr;
 
 	/* Default action XDP_PASS, imply everything we couldn't parse, or that
 	 * we don't want to deal with, we just pass up the stack and let the
@@ -128,7 +129,7 @@ int  xdp_parser_func(struct xdp_md *ctx)
 
 	/* These keep track of the next header type and iterator pointer */
 	struct hdr_cursor nh;
-	int nh_type;
+	int eth_type, ip_type;
 
 	/* Start next header cursor position at data start */
 	nh.pos = data;
@@ -137,11 +138,19 @@ int  xdp_parser_func(struct xdp_md *ctx)
 	 * parsing fails. Each helper function does sanity checking (is the
 	 * header type in the packet correct?), and bounds checking.
 	 */
-	nh_type = parse_ethhdr(&nh, data_end, &eth);
-	if (nh_type != bpf_htons(ETH_P_IPV6))
+	eth_type = parse_ethhdr(&nh, data_end, &eth);
+	if (eth_type != bpf_htons(ETH_P_IPV6))
 		goto out;
 
 	/* Assignment additions go below here */
+  //  if (eth_type == bpf_htons(ETH_P_IP)) {
+  //    ip_type = parse_iphdr(&nh, data_end, &iphdr);
+  //  } else if (eth_type == bpf_htons(ETH_P_IPV6)) {
+  if (eth_type == bpf_htons(ETH_P_IPV6)) {
+    ip_type = parse_ip6hdr(&nh, data_end, &ipv6hdr);
+  } else {
+    goto out;
+  }
 
 	action = XDP_DROP;
 out:
