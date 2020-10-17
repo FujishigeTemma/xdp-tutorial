@@ -167,6 +167,7 @@ int  xdp_parser_func(struct xdp_md *ctx)
 
     if (bpf_ntohs(icmp6h->icmp6_sequence) % 2 == 0)
       action = XDP_DROP;
+    goto out;
   } else {
     goto out;
   }
