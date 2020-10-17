@@ -139,7 +139,7 @@ int  xdp_parser_func(struct xdp_md *ctx)
 
 	/* These keep track of the next header type and iterator pointer */
 	struct hdr_cursor nh;
-	int eth_type, ip_type;
+	int eth_type, nh_type;
 
 	/* Start next header cursor position at data start */
 	nh.pos = data;
@@ -157,7 +157,7 @@ int  xdp_parser_func(struct xdp_md *ctx)
   //    ip_type = parse_iphdr(&nh, data_end, &iphdr);
   //  } else if (eth_type == bpf_htons(ETH_P_IPV6)) {
   if (eth_type == bpf_htons(ETH_P_IPV6)) {
-    nh_type = parse_ip6hdr(&nh, data_end, &ip6h);
+    nh_type = parse_ip6hdr(&nh, data_end, &ipv6h);
     if (nh_type != IPPROTO_ICMPV6)
       goto out;
 
