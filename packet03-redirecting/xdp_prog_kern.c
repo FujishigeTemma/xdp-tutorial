@@ -183,32 +183,34 @@ int xdp_icmp_echo_func(struct xdp_md *ctx)
 }
 
 /* Assignment 2 */
-SEC("xdp_redirect")
+SSEC("xdp_redirect")
 int xdp_redirect_func(struct xdp_md *ctx)
 {
-	void *data_end = (void *)(long)ctx->data_end;
-	void *data = (void *)(long)ctx->data;
-	struct hdr_cursor nh;
-	struct ethhdr *eth;
-	int eth_type;
-	int action = XDP_PASS;
-	/* unsigned char dst[ETH_ALEN] = {} */	/* Assignment 2: fill in with the MAC address of the left inner interface */
-	/* unsigned ifindex = 0; */		/* Assignment 2: fill in with the ifindex of the left interface */
+  void *data_end = (void *)(long)ctx->data_end;
+  void *data = (void *)(long)ctx->data;
+  struct hdr_cursor nh;
+  struct ethhdr *eth;
+  int eth_type;
+  int action = XDP_PASS;
+  unsigned char dst[ETH_ALEN] = { /* TODO: put your values here */ };
+  unsigned ifindex = 0 /* TODO: put your values here */;
 
-	/* These keep track of the next header type and iterator pointer */
-	nh.pos = data;
+  /* These keep track of the next header type and iterator pointer */
+  nh.pos = data;
 
-	/* Parse Ethernet and IP/IPv6 headers */
-	eth_type = parse_ethhdr(&nh, data_end, &eth);
-	if (eth_type == -1)
-		goto out;
+  /* Parse Ethernet and IP/IPv6 headers */
+  eth_type = parse_ethhdr(&nh, data_end, &eth);
+  if (eth_type == -1)
+    goto out;
 
-	/* Assignment 2: set a proper destination address and call the
-	 * bpf_redirect() with proper parameters, action = bpf_redirect(...) */
+  /* Set a proper destination address */
+  memcpy(eth->h_dest, dst, ETH_ALEN);
+  action = bpf_redirect(ifindex, 0);
 
-out:
-	return xdp_stats_record_action(ctx, action);
+  out:
+  return xdp_stats_record_action(ctx, action);
 }
+
 
 /* Assignment 3: nothing to do here, patch the xdp_prog_user.c program */
 SEC("xdp_redirect_map")
@@ -254,88 +256,106 @@ static __always_inline int ip_decrease_ttl(struct iphdr *iph)
 SEC("xdp_router")
 int xdp_router_func(struct xdp_md *ctx)
 {
-	void *data_end = (void *)(long)ctx->data_end;
-	void *data = (void *)(long)ctx->data;
-	struct bpf_fib_lookup fib_params = {};
-	struct ethhdr *eth = data;
-	struct ipv6hdr *ip6h;
-	struct iphdr *iph;
-	__u16 h_proto;
-	__u64 nh_off;
-	int rc;
-	int action = XDP_PASS;
+  void *data_end = (void *)(long)ctx->data_end;
+  void *data = (void *)(long)ctx->data;
+  struct bpf_fib_lookup fib_params = {};
+  struct ethhdr *eth = data;
+  struct ipv6hdr *ip6h;
+  struct iphdr *iph;
+  __u16 h_proto;
+  __u64 nh_off;
+  int rc;
+  int action = XDP_PASS;
 
-	nh_off = sizeof(*eth);
-	if (data + nh_off > data_end) {
-		action = XDP_DROP;
-		goto out;
-	}
+  nh_off = sizeof(*eth);
+  if (data + nh_off > data_end) {
+    action = XDP_DROP;
+    goto out;
+  }
 
-	h_proto = eth->h_proto;
-	if (h_proto == bpf_htons(ETH_P_IP)) {
-		iph = data + nh_off;
+  h_proto = eth->h_proto;
+  if (h_proto == bpf_htons(ETH_P_IP)) {
+    iph = data + nh_off;
 
-		if (iph + 1 > data_end) {
-			action = XDP_DROP;
-			goto out;
-		}
+    if (iph + 1 > data_end) {
+      action = XDP_DROP;
+      goto out;
+    }
 
-		if (iph->ttl <= 1)
-			goto out;
+    if (iph->ttl <= 1)
+      goto out;
 
-		/* Assignment 4: fill the fib_params structure for the AF_INET case */
-	} else if (h_proto == bpf_htons(ETH_P_IPV6)) {
-		/* These pointers can be used to assign structures instead of executing memcpy: */
-		/* struct in6_addr *src = (struct in6_addr *) fib_params.ipv6_src; */
-		/* struct in6_addr *dst = (struct in6_addr *) fib_params.ipv6_dst; */
+    fib_params.family	= AF_INET;
+    fib_params.tos		= iph->tos;
+    fib_params.l4_protocol	= iph->protocol;
+    fib_params.sport	= 0;
+    fib_params.dport	= 0;
+    fib_params.tot_len	= bpf_ntohs(iph->tot_len);
+    fib_params.ipv4_src	= iph->saddr;
+    fib_params.ipv4_dst	= iph->daddr;
+  } else if (h_proto == bpf_htons(ETH_P_IPV6)) {
+    struct in6_addr *src = (struct in6_addr *) fib_params.ipv6_src;
+    struct in6_addr *dst = (struct in6_addr *) fib_params.ipv6_dst;
 
-		ip6h = data + nh_off;
-		if (ip6h + 1 > data_end) {
-			action = XDP_DROP;
-			goto out;
-		}
+    ip6h = data + nh_off;
+    if (ip6h + 1 > data_end) {
+      action = XDP_DROP;
+      goto out;
+    }
 
-		if (ip6h->hop_limit <= 1)
-			goto out;
+    if (ip6h->hop_limit <= 1)
+      goto out;
 
-		/* Assignment 4: fill the fib_params structure for the AF_INET6 case */
-	} else {
-		goto out;
-	}
+    fib_params.family	= AF_INET6;
+    fib_params.flowinfo	= *(__be32 *) ip6h & IPV6_FLOWINFO_MASK;
+    fib_params.l4_protocol	= ip6h->nexthdr;
+    fib_params.sport	= 0;
+    fib_params.dport	= 0;
+    fib_params.tot_len	= bpf_ntohs(ip6h->payload_len);
+    *src			= ip6h->saddr;
+    *dst			= ip6h->daddr;
+  } else {
+    goto out;
+  }
 
-	fib_params.ifindex = ctx->ingress_ifindex;
+  fib_params.ifindex = ctx->ingress_ifindex;
 
-	rc = bpf_fib_lookup(ctx, &fib_params, sizeof(fib_params), 0);
-	switch (rc) {
-	case BPF_FIB_LKUP_RET_SUCCESS:         /* lookup successful */
-		if (h_proto == bpf_htons(ETH_P_IP))
-			ip_decrease_ttl(iph);
-		else if (h_proto == bpf_htons(ETH_P_IPV6))
-			ip6h->hop_limit--;
+  rc = bpf_fib_lookup(ctx, &fib_params, sizeof(fib_params), 0);
+  switch (rc) {
+    case BPF_FIB_LKUP_RET_SUCCESS:         /* lookup successful */
+      if (h_proto == bpf_htons(ETH_P_IP))
+        ip_decrease_ttl(iph);
+      else if (h_proto == bpf_htons(ETH_P_IPV6))
+        ip6h->hop_limit--;
 
-		/* Assignment 4: fill in the eth destination and source
-		 * addresses and call the bpf_redirect_map function */
-		/* memcpy(eth->h_dest, ???, ETH_ALEN); */
-		/* memcpy(eth->h_source, ???, ETH_ALEN); */
-		/* action = bpf_redirect_map(&tx_port, ???, 0); */
-		break;
-	case BPF_FIB_LKUP_RET_BLACKHOLE:    /* dest is blackholed; can be dropped */
-	case BPF_FIB_LKUP_RET_UNREACHABLE:  /* dest is unreachable; can be dropped */
-	case BPF_FIB_LKUP_RET_PROHIBIT:     /* dest not allowed; can be dropped */
-		action = XDP_DROP;
-		break;
-	case BPF_FIB_LKUP_RET_NOT_FWDED:    /* packet is not forwarded */
-	case BPF_FIB_LKUP_RET_FWD_DISABLED: /* fwding is not enabled on ingress */
-	case BPF_FIB_LKUP_RET_UNSUPP_LWT:   /* fwd requires encapsulation */
-	case BPF_FIB_LKUP_RET_NO_NEIGH:     /* no neighbor entry for nh */
-	case BPF_FIB_LKUP_RET_FRAG_NEEDED:  /* fragmentation required to fwd */
-		/* PASS */
-		break;
-	}
+      memcpy(eth->h_dest, fib_params.dmac, ETH_ALEN);
+      memcpy(eth->h_source, fib_params.smac, ETH_ALEN);
+      action = bpf_redirect_map(&tx_port, fib_params.ifindex, 0);
+      break;
+    case BPF_FIB_LKUP_RET_BLACKHOLE:    /* dest is blackholed; can be dropped */
+    case BPF_FIB_LKUP_RET_UNREACHABLE:  /* dest is unreachable; can be dropped */
+    case BPF_FIB_LKUP_RET_PROHIBIT:     /* dest not allowed; can be dropped */
+      action = XDP_DROP;
+      break;
+    case BPF_FIB_LKUP_RET_NOT_FWDED:    /* packet is not forwarded */
+    case BPF_FIB_LKUP_RET_FWD_DISABLED: /* fwding is not enabled on ingress */
+    case BPF_FIB_LKUP_RET_UNSUPP_LWT:   /* fwd requires encapsulation */
+    case BPF_FIB_LKUP_RET_NO_NEIGH:     /* no neighbor entry for nh */
+    case BPF_FIB_LKUP_RET_FRAG_NEEDED:  /* fragmentation required to fwd */
+      /* PASS */
+      break;
+  }
 
-out:
-	return xdp_stats_record_action(ctx, action);
+  out:
+  return xdp_stats_record_action(ctx, action);
 }
+
+SEC("xdp_pass")
+int xdp_pass_func(struct xdp_md *ctx)
+{
+  return XDP_PASS;
+}
+
 
 SEC("xdp_pass")
 int xdp_pass_func(struct xdp_md *ctx)
