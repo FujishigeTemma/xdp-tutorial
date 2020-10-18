@@ -28,86 +28,132 @@ struct bpf_map_def SEC("maps") redirect_params = {
 	.value_size = ETH_ALEN,
 	.max_entries = 1,
 };
+
+/*
+ * Swaps destination and source MAC addresses inside an Ethernet header
+ */
 static __always_inline void swap_src_dst_mac(struct ethhdr *eth)
 {
-	/* Assignment 1: swap source and destination addresses in the eth.
-	 * For simplicity you can use the memcpy macro defined above */
+  __u8 h_tmp[ETH_ALEN];
+
+  __builtin_memcpy(h_tmp, eth->h_source, ETH_ALEN);
+  __builtin_memcpy(eth->h_source, eth->h_dest, ETH_ALEN);
+  __builtin_memcpy(eth->h_dest, h_tmp, ETH_ALEN);
 }
 
+/*
+ * Swaps destination and source IPv6 addresses inside an IPv6 header
+ */
 static __always_inline void swap_src_dst_ipv6(struct ipv6hdr *ipv6)
 {
-	/* Assignment 1: swap source and destination addresses in the iphv6dr */
+  struct in6_addr tmp = ipv6->saddr;
+
+  ipv6->saddr = ipv6->daddr;
+  ipv6->daddr = tmp;
 }
 
+/*
+ * Swaps destination and source IPv4 addresses inside an IPv4 header
+ */
 static __always_inline void swap_src_dst_ipv4(struct iphdr *iphdr)
 {
-	/* Assignment 1: swap source and destination addresses in the iphdr */
+  __be32 tmp = iphdr->saddr;
+
+  iphdr->saddr = iphdr->daddr;
+  iphdr->daddr = tmp;
 }
 
 /* Implement packet03/assignment-1 in this section */
 SEC("xdp_icmp_echo")
 int xdp_icmp_echo_func(struct xdp_md *ctx)
 {
-	void *data_end = (void *)(long)ctx->data_end;
-	void *data = (void *)(long)ctx->data;
-	struct hdr_cursor nh;
-	struct ethhdr *eth;
-	int eth_type;
-	int ip_type;
-	int icmp_type;
-	struct iphdr *iphdr;
-	struct ipv6hdr *ipv6hdr;
-	__u16 echo_reply;
-	struct icmphdr_common *icmphdr;
-	__u32 action = XDP_PASS;
+  void *data_end = (void *)(long)ctx->data_end;
+  void *data = (void *)(long)ctx->data;
+  struct hdr_cursor nh;
+  struct ethhdr *eth;
+  int eth_type;
+  int ip_type;
+  int icmp_type;
+  struct iphdr *iphdr;
+  struct ipv6hdr *ipv6hdr;
+  __u16 echo_reply, old_csum;
+  struct icmphdr_common *icmphdr;
+  struct icmphdr_common icmphdr_old;
+  __u32 action = XDP_PASS;
 
-	/* These keep track of the next header type and iterator pointer */
-	nh.pos = data;
+  /* These keep track of the next header type and iterator pointer */
+  nh.pos = data;
 
-	/* Parse Ethernet and IP/IPv6 headers */
-	eth_type = parse_ethhdr(&nh, data_end, &eth);
-	if (eth_type == bpf_htons(ETH_P_IP)) {
-		ip_type = parse_iphdr(&nh, data_end, &iphdr);
-		if (ip_type != IPPROTO_ICMP)
-			goto out;
-	} else if (eth_type == bpf_htons(ETH_P_IPV6)) {
-		ip_type = parse_ip6hdr(&nh, data_end, &ipv6hdr);
-		if (ip_type != IPPROTO_ICMPV6)
-			goto out;
-	} else {
-		goto out;
-	}
+  /* Parse Ethernet and IP/IPv6 headers */
+  eth_type = parse_ethhdr(&nh, data_end, &eth);
+  if (eth_type == bpf_htons(ETH_P_IP)) {
+    ip_type = parse_iphdr(&nh, data_end, &iphdr);
+    if (ip_type != IPPROTO_ICMP)
+      goto out;
+  } else if (eth_type == bpf_htons(ETH_P_IPV6)) {
+    ip_type = parse_ip6hdr(&nh, data_end, &ipv6hdr);
+    if (ip_type != IPPROTO_ICMPV6)
+      goto out;
+  } else {
+    goto out;
+  }
 
-	/*
-	 * We are using a special parser here which returns a stucture
-	 * containing the "protocol-independent" part of an ICMP or ICMPv6
-	 * header.  For purposes of this Assignment we are not interested in
-	 * the rest of the structure.
-	 */
-	icmp_type = parse_icmphdr_common(&nh, data_end, &icmphdr);
-	if (eth_type == bpf_htons(ETH_P_IP) && icmp_type == ICMP_ECHO) {
-		/* Swap IP source and destination */
-		swap_src_dst_ipv4(iphdr);
-		echo_reply = ICMP_ECHOREPLY;
-	} else if (eth_type == bpf_htons(ETH_P_IPV6)
-		   && icmp_type == ICMPV6_ECHO_REQUEST) {
-		/* Swap IPv6 source and destination */
-		swap_src_dst_ipv6(ipv6hdr);
-		echo_reply = ICMPV6_ECHO_REPLY;
-	} else {
-		goto out;
-	}
+  /*
+   * We are using a special parser here which returns a stucture
+   * containing the "protocol-independent" part of an ICMP or ICMPv6
+   * header.  For purposes of this Assignment we are not interested in
+   * the rest of the structure.
+   */
+  icmp_type = parse_icmphdr_common(&nh, data_end, &icmphdr);
+  if (eth_type == bpf_htons(ETH_P_IP) && icmp_type == ICMP_ECHO) {
+    /* Swap IP source and destination */
+    swap_src_dst_ipv4(iphdr);
+    echo_reply = ICMP_ECHOREPLY;
+  } else if (eth_type == bpf_htons(ETH_P_IPV6)
+             && icmp_type == ICMPV6_ECHO_REQUEST) {
+    /* Swap IPv6 source and destination */
+    swap_src_dst_ipv6(ipv6hdr);
+    echo_reply = ICMPV6_ECHO_REPLY;
+  } else {
+    goto out;
+  }
 
-	/* Swap Ethernet source and destination */
-	swap_src_dst_mac(eth);
+  /* Swap Ethernet source and destination */
+  swap_src_dst_mac(eth);
 
-	/* Assignment 1: patch the packet and update the checksum. You can use
-	 * the echo_reply variable defined above to fix the ICMP Type field. */
 
-	action = XDP_TX;
+  /* Patch the packet and update the checksum.*/
+  old_csum = icmphdr->cksum;
+  icmphdr->cksum = 0;
+  icmphdr_old = *icmphdr;
+  icmphdr->type = echo_reply;
+  icmphdr->cksum = icmp_checksum_diff(~old_csum, icmphdr, &icmphdr_old);
 
-out:
-	return xdp_stats_record_action(ctx, action);
+  /* Another, less generic, but a bit more efficient way to update the
+   * checksum is listed below.  As only one 16-bit word changed, the sum
+   * can be patched using this formula: sum' = ~(~sum + ~m0 + m1), where
+   * sum' is a new sum, sum is an old sum, m0 and m1 are the old and new
+   * 16-bit words, correspondingly. In the formula above the + operation
+   * is defined as the following function:
+   *
+   *     static __always_inline __u16 csum16_add(__u16 csum, __u16 addend)
+   *     {
+   *         csum += addend;
+   *         return csum + (csum < addend);
+   *     }
+   *
+   * So an alternative code to update the checksum might look like this:
+   *
+   *     __u16 m0 = * (__u16 *) icmphdr;
+   *     icmphdr->type = echo_reply;
+   *     __u16 m1 = * (__u16 *) icmphdr;
+   *     icmphdr->checksum = ~(csum16_add(csum16_add(~icmphdr->checksum, ~m0), m1));
+   */
+
+  action = XDP_TX;
+
+  out:
+  return xdp_stats_record_action(ctx, action);
 }
 
 /* Assignment 2 */
