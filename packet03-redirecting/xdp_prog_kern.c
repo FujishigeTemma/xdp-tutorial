@@ -183,7 +183,7 @@ int xdp_icmp_echo_func(struct xdp_md *ctx)
 }
 
 /* Assignment 2 */
-SSEC("xdp_redirect")
+SEC("xdp_redirect")
 int xdp_redirect_func(struct xdp_md *ctx)
 {
   void *data_end = (void *)(long)ctx->data_end;
@@ -244,6 +244,10 @@ int xdp_redirect_map_func(struct xdp_md *ctx)
 out:
 	return xdp_stats_record_action(ctx, action);
 }
+
+#define AF_INET 2
+#define AF_INET6 10
+#define IPV6_FLOWINFO_MASK bpf_htonl(0x0FFFFFFF)
 
 /* from include/net/ip.h */
 static __always_inline int ip_decrease_ttl(struct iphdr *iph)
@@ -354,13 +358,6 @@ SEC("xdp_pass")
 int xdp_pass_func(struct xdp_md *ctx)
 {
   return XDP_PASS;
-}
-
-
-SEC("xdp_pass")
-int xdp_pass_func(struct xdp_md *ctx)
-{
-	return XDP_PASS;
 }
 
 char _license[] SEC("license") = "GPL";
