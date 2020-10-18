@@ -347,6 +347,7 @@ int xdp_router_func(struct xdp_md *ctx)
     case BPF_FIB_LKUP_RET_NO_NEIGH:     /* no neighbor entry for nh */
     case BPF_FIB_LKUP_RET_FRAG_NEEDED:  /* fragmentation required to fwd */
       /* PASS */
+      action = XDP_ABORTED;
       break;
   }
 
