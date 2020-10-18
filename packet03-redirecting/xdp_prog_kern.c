@@ -29,6 +29,32 @@ struct bpf_map_def SEC("maps") redirect_params = {
 	.max_entries = 1,
 };
 
+static __always_inline __u16 csum_fold_helper(__u32 csum)
+{
+__u32 sum;
+sum = (csum >> 16) + (csum & 0xffff);
+sum += (sum >> 16);
+return ~sum;
+}
+
+/*
+ * The icmp_checksum_diff function takes pointers to old and new structures and
+ * the old checksum and returns the new checksum.  It uses the bpf_csum_diff
+ * helper to compute the checksum difference. Note that the sizes passed to the
+ * bpf_csum_diff helper should be multiples of 4, as it operates on 32-bit
+ * words.
+ */
+static __always_inline __u16 icmp_checksum_diff(
+        __u16 seed,
+struct icmphdr_common *icmphdr_new,
+struct icmphdr_common *icmphdr_old)
+{
+__u32 csum, size = sizeof(struct icmphdr_common);
+
+csum = bpf_csum_diff((__be32 *)icmphdr_old, size, (__be32 *)icmphdr_new, size, seed);
+return csum_fold_helper(csum);
+}
+
 /*
  * Swaps destination and source MAC addresses inside an Ethernet header
  */
