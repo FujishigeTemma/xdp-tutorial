@@ -12,52 +12,141 @@
 #include "../common/xdp_stats_kern.h"
 
 /* Pops the outermost VLAN tag off the packet. Returns the popped VLAN ID on
- * success or -1 on failure.
+ * success or negative errno on failure.
  */
 static __always_inline int vlan_tag_pop(struct xdp_md *ctx, struct ethhdr *eth)
 {
-	/*
-	void *data_end = (void *)(long)ctx->data_end;
-	struct ethhdr eth_cpy;
-	struct vlan_hdr *vlh;
-	__be16 h_proto;
-	*/
-	int vlid = -1;
+  void *data_end = (void *)(long)ctx->data_end;
+  struct ethhdr eth_cpy;
+  struct vlan_hdr *vlh;
+  __be16 h_proto;
+  int vlid;
 
-	/* Check if there is a vlan tag to pop */
+  if (!proto_is_vlan(eth->h_proto))
+    return -1;
 
-	/* Still need to do bounds checking */
+  /* Careful with the parenthesis here */
+  vlh = (void *)(eth + 1);
 
-	/* Save vlan ID for returning, h_proto for updating Ethernet header */
+  /* Still need to do bounds checking */
+  if (vlh + 1 > data_end)
+    return -1;
 
-	/* Make a copy of the outer Ethernet header before we cut it off */
+  /* Save vlan ID for returning, h_proto for updating Ethernet header */
+  vlid = bpf_ntohs(vlh->h_vlan_TCI);
+  h_proto = vlh->h_vlan_encapsulated_proto;
 
-	/* Actually adjust the head pointer */
+  /* Make a copy of the outer Ethernet header before we cut it off */
+  __builtin_memcpy(&eth_cpy, eth, sizeof(eth_cpy));
 
-	/* Need to re-evaluate data *and* data_end and do new bounds checking
-	 * after adjusting head
-	 */
+  /* Actually adjust the head pointer */
+  if (bpf_xdp_adjust_head(ctx, (int)sizeof(*vlh)))
+    return -1;
 
-	/* Copy back the old Ethernet header and update the proto type */
+  /* Need to re-evaluate data *and* data_end and do new bounds checking
+   * after adjusting head
+   */
+  eth = (void *)(long)ctx->data;
+  data_end = (void *)(long)ctx->data_end;
+  if (eth + 1 > data_end)
+    return -1;
 
+  /* Copy back the old Ethernet header and update the proto type */
+  __builtin_memcpy(eth, &eth_cpy, sizeof(*eth));
+  eth->h_proto = h_proto;
 
-	return vlid;
+  return vlid;
 }
 
 /* Pushes a new VLAN tag after the Ethernet header. Returns 0 on success,
  * -1 on failure.
  */
 static __always_inline int vlan_tag_push(struct xdp_md *ctx,
-					 struct ethhdr *eth, int vlid)
+                                         struct ethhdr *eth, int vlid)
 {
-	return 0;
+  void *data_end = (void *)(long)ctx->data_end;
+  struct ethhdr eth_cpy;
+  struct vlan_hdr *vlh;
+
+  /* First copy the original Ethernet header */
+  __builtin_memcpy(&eth_cpy, eth, sizeof(eth_cpy));
+
+  /* Then add space in front of the packet */
+  if (bpf_xdp_adjust_head(ctx, 0 - (int)sizeof(*vlh)))
+    return -1;
+
+  /* Need to re-evaluate data_end and data after head adjustment, and
+   * bounds check, even though we know there is enough space (as we
+   * increased it).
+   */
+  data_end = (void *)(long)ctx->data_end;
+  eth = (void *)(long)ctx->data;
+
+  if (eth + 1 > data_end)
+    return -1;
+
+  /* Copy back Ethernet header in the right place, populate VLAN tag with
+   * ID and proto, and set outer Ethernet header to VLAN type.
+   */
+  __builtin_memcpy(eth, &eth_cpy, sizeof(*eth));
+
+  vlh = (void *)(eth + 1);
+
+  if (vlh + 1 > data_end)
+    return -1;
+
+  vlh->h_vlan_TCI = bpf_htons(vlid);
+  vlh->h_vlan_encapsulated_proto = eth->h_proto;
+
+  eth->h_proto = bpf_htons(ETH_P_8021Q);
+  return 0;
 }
 
 /* Implement assignment 1 in this section */
 SEC("xdp_port_rewrite")
 int xdp_port_rewrite_func(struct xdp_md *ctx)
 {
-	return XDP_PASS;
+  int action = XDP_PASS;
+  int eth_type, ip_type;
+  struct ethhdr *eth;
+  struct iphdr *iphdr;
+  struct ipv6hdr *ipv6hdr;
+  struct udphdr *udphdr;
+  struct tcphdr *tcphdr;
+  void *data_end = (void *)(long)ctx->data_end;
+  void *data = (void *)(long)ctx->data;
+  struct hdr_cursor nh = { .pos = data };
+
+  eth_type = parse_ethhdr(&nh, data_end, &eth);
+  if (eth_type < 0) {
+    action = XDP_ABORTED;
+    goto out;
+  }
+
+  if (eth_type == bpf_htons(ETH_P_IP)) {
+    ip_type = parse_iphdr(&nh, data_end, &iphdr);
+  } else if (eth_type == bpf_htons(ETH_P_IPV6)) {
+    ip_type = parse_ip6hdr(&nh, data_end, &ipv6hdr);
+  } else {
+    goto out;
+  }
+
+  if (ip_type == IPPROTO_UDP) {
+    if (parse_udphdr(&nh, data_end, &udphdr) < 0) {
+      action = XDP_ABORTED;
+      goto out;
+    }
+    udphdr->dest = bpf_htons(bpf_ntohs(udphdr->dest) - 1);
+  } else if (ip_type == IPPROTO_TCP) {
+    if (parse_tcphdr(&nh, data_end, &tcphdr) < 0) {
+      action = XDP_ABORTED;
+      goto out;
+    }
+    tcphdr->dest = bpf_htons(bpf_ntohs(tcphdr->dest) - 1);
+  }
+
+  out:
+  return xdp_stats_record_action(ctx, action);
 }
 
 /* VLAN swapper; will pop outermost VLAN tag if it exists, otherwise push a new
@@ -66,26 +155,25 @@ int xdp_port_rewrite_func(struct xdp_md *ctx)
 SEC("xdp_vlan_swap")
 int xdp_vlan_swap_func(struct xdp_md *ctx)
 {
-	void *data_end = (void *)(long)ctx->data_end;
-	void *data = (void *)(long)ctx->data;
+  void *data_end = (void *)(long)ctx->data_end;
+  void *data = (void *)(long)ctx->data;
 
-	/* These keep track of the next header type and iterator pointer */
-	struct hdr_cursor nh;
-	int nh_type;
-	nh.pos = data;
+  /* These keep track of the next header type and iterator pointer */
+  struct hdr_cursor nh;
+  int nh_type;
+  nh.pos = data;
 
-	struct ethhdr *eth;
-	nh_type = parse_ethhdr(&nh, data_end, &eth);
-	if (nh_type < 0)
-		return XDP_PASS;
+  struct ethhdr *eth;
+  nh_type = parse_ethhdr(&nh, data_end, &eth);
+  if (nh_type < 0)
+    return XDP_PASS;
 
-	/* Assignment 2 and 3 will implement these. For now they do nothing */
-	if (proto_is_vlan(eth->h_proto))
-		vlan_tag_pop(ctx, eth);
-	else
-		vlan_tag_push(ctx, eth, 1);
+  if (proto_is_vlan(eth->h_proto))
+    vlan_tag_pop(ctx, eth);
+  else
+    vlan_tag_push(ctx, eth, 1);
 
-	return XDP_PASS;
+  return XDP_PASS;
 }
 
 /* Solution to the parsing exercise in lesson packet01. Handles VLANs and legacy
